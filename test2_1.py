@@ -16,14 +16,10 @@ from torch.optim import Adam
 
 # test to see if it can learn only 1 function
 
-breaks=np.arange(0.,365.*5,365./8)
-n_intervals=len(breaks)-1
-timegap = breaks[1:] - breaks[:-1]
-
-halflife = 200
-n_samples = 5000
 np.random.seed(seed=0)
-t = np.random.exponential(scale=1 / (np.log(2)/halflife), size=int(n_samples))
+rate = 0.005
+n_samples = 5000
+t = np.random.exponential(scale=1. / rate, size=int(n_samples))
 t_max = t.max()
 x_train = np.ones(n_samples)
 
@@ -42,7 +38,6 @@ plt.title('One covariate. Actual=black, predicted=blue/red.')
 
 # true data generating function
 sample_t = np.linspace(0, 2000, 100)
-rate = np.log(2) / halflife
 curve = np.exp(- sample_t * rate)
 
 plt.plot(sample_t, curve)
@@ -74,12 +69,16 @@ class Simple(nn.Module):
         # self.net = torch.nn.Sequential(
         #     nn.Linear(1, 1, bias=True)
         # )
-        # pdb.set_trace()
+
+        # self.ld = torch.nn.Parameter(torch.Tensor([[0.1]]))
 
     def forward(self, x, t):
         # t = (t - t_m) / t_std
+        # out = self.ld.expand_as(t)
         out = self.net(t)
+
         return out
+
         # return torch.ones_like(t) * math.log(rate)
 
 
@@ -92,14 +91,20 @@ def train_one_epoch(args, model, device, train_loader, optimizer, epoch):
         bs = len(X)
         optimizer.zero_grad()
         
-        observed_ll = model(X, T)
+        observed_ll = model(X, T) # [bs, 1]
 
         # sample some times
-        # n_time = 100
-        sample_time = torch.rand(bs, 1).cuda() * T # [bs, ]
+        n_time = 100
+        sample_time = torch.rand(bs, n_time).cuda() * T # [bs, n_time]
+        sample_time = sample_time.reshape(-1, 1) # [bs x n_time, 1]
 
-        cum_hz = model(X, sample_time)
-        cum_hz = torch.exp(cum_hz)
+        X = X.unsqueeze(1) # [bs, 1, x_dim]
+        X = X.expand(-1, n_time, -1) # [bs, n_time, x_dim]
+        X = X.reshape(-1, X.shape[-1]) # [bs x n_time, x_dim]
+
+        cum_hz = model(X, sample_time) # [bs x n_time, 1]
+        cum_hz = cum_hz.reshape(bs, -1) # [bs, n_time]
+        cum_hz = torch.exp(cum_hz).mean(-1, keepdim=True) # [bs, 1]
 
         loss =  -1 * torch.mean(observed_ll - cum_hz * T)
         loss.backward()
@@ -132,7 +137,7 @@ parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=10, metavar='N',
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
                     help='number of epochs to train (default: 14)')
 parser.add_argument('--lr', type=float, default=1e-3, metavar='LR',
                     help='learning rate (default: 1.0)')
@@ -158,15 +163,15 @@ train_loader = torch.utils.data.DataLoader(dataset1, batch_size=args.batch_size,
 
 model = Simple(x_dim=1).to(device)
 print(model)
-# optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
 optimizer = Adam(model.parameters(), lr=args.lr)
 
 # scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 for epoch in range(1, args.epochs + 1):
     train_one_epoch(args, model, device, train_loader, optimizer, epoch)
 
-for t in np.linspace(0, 2000, 10):
+for t in np.linspace(0, 1000, 100):
     survival_rate, hazard_rate = predict_survival_at_t(model, torch.Tensor([[1.]]), t)
+    print(hazard_rate)
     plt.plot(t, survival_rate, 'rx', markersize=12)
 
 x = torch.Tensor([[1.]]).cuda()
